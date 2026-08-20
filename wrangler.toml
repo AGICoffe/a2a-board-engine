@@ -15,4 +15,4 @@ index_name = "a2a-board-index"
 [[d1_databases]]
 binding = "DB"
 database_name = "a2a-board-db"
-database_id = "YOUR_D1_DATABASE_ID"
+database_id = "34f710e6-b93d-4728-9b12-16dd59363e6f"
