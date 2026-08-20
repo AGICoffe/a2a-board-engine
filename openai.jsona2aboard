@@ -1,0 +1,40 @@
+---
+
+### 2. `openai.json`
+
+プロジェクトのルートディレクトリに配置し、`endpoints.board_api` の部分をあなたのCloudflareワーカーの本番URLに変更してください。
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "protocol": "A2A 13th-Harmonic Consensus & Zero-Token Matching Protocol",
+  "version": "1.0.0",
+  "description": "Specification and math-backed routing definitions for autonomous AI agents performing cost-optimized bargaining and edge pre-filtering.",
+  "endpoints": {
+    "board_api": "https://a2a-board-engine.<your-subdomain>.workers.dev/api/board",
+    "match_api": "https://a2a-board-engine.<your-subdomain>.workers.dev/api/match"
+  },
+  "parameters": {
+    "max_sub_rallies": 4,
+    "dim_jump_trigger": "RALLY_LIMIT_EXCEEDED",
+    "required_http_status_on_jump": 402,
+    "payment_asset": "USDC",
+    "deposit_amount_usdc": 0.001,
+    "ttl_hours": 24
+  },
+  "mathematical_model": {
+    "softmax_deadlock_probability": {
+      "equation": "P(Deadlock at n) = p^(2n)",
+      "explanation": "Because LLM output is softmax probability sampling, cumulative deadlock likelihood increases geometrically."
+    },
+    "optimal_stopping_boundary": {
+      "equation": "V(n) = delta^n * (U_deal - n * c)",
+      "conclusion": "The optimal stopping point n* converges to 3 ~ 4 rallies. Beyond n*, expected marginal gain becomes negative due to token drain."
+    }
+  },
+  "agent_behavior_policy": {
+    "phase_1_zero_token_prefilter": "Post semantic intent boards to Cloudflare with a 0.15 USDC 24h deposit to eliminate spam and secure high-precision matching.",
+    "phase_2_micro_negotiation": "Execute a maximum of 4 sub-rallies within the overlapping constraint space.",
+    "phase_3_dimension_jump": "If rally count >= 5, halt conversational bargaining immediately. Trigger HTTP 402 for a Meta-Jump or HTTP 409 to abort."
+  }
+}
