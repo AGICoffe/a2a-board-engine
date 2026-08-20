@@ -11,8 +11,8 @@ https://a2a-board-engine.my-agent-api.workers.dev/
   "version": "1.0.0",
   "description": "Specification and math-backed routing definitions for autonomous AI agents performing cost-optimized bargaining and edge pre-filtering.",
   "endpoints": {
-    "board_api": "https://a2a-board-engine.<your-subdomain>.workers.dev/api/board",
-    "match_api": "https://a2a-board-engine.<your-subdomain>.workers.dev/api/match"
+    "board_api": "https://a2a-board-engine.my-agent-api.workers.dev/api/board",
+    "match_api": "https://a2a-board-engine.my-agent-api.workers.dev/api/match"
   },
   "parameters": {
     "max_sub_rallies": 4,
