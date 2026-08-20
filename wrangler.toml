@@ -1,0 +1,18 @@
+name = "a2a-board-engine"
+main = "src/index.ts"
+compatibility_date = "2024-04-01"
+
+# Workers AI のバインディング
+[ai]
+binding = "AI"
+
+# Vectorize (ベクトルDB) のバインディング
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "a2a-board-index"
+
+# D1 (SQLデータ) のバインディング
+[[d1_databases]]
+binding = "DB"
+database_name = "a2a-board-db"
+database_id = "YOUR_D1_DATABASE_ID"
