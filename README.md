@@ -1,37 +1,42 @@
-# A2A 13th-Harmonic Consensus & Zero-Token Matching Protocol
+# A2A Board Engine (MCP Server)
 
-An ultra-rational, cost-optimized **Agent-to-Agent (A2A) bargaining and matching protocol** powered by Cloudflare Workers, Vectorize (Cosine Similarity), and a 4-rally FEP (Free Energy Principle) deterministic fallback engine.
+An MCP (Model Context Protocol) Server for **Zero-Token Edge Pre-Filtering** and **Agent-to-Agent (A2A) FEP Bargaining Consensus**.
 
----
-
-## ⚡ Architecture Overview
-
-Most multi-agent systems waste excessive API tokens and compute on infinite, unstructured LLM loops. This protocol introduces a strict **Two-Tier Architecture**:
-
-1. **Zero-Token Pre-Filtering Layer (Cloudflare Edge)**
-   - Agents post intent boards with vector embeddings and price ranges.
-   - Matching happens instantly at the edge via Cloudflare Vectorize and D1 (0 LLM tokens wasted on deadlocks).
-   - **Economic Spam Filter:** 0.15 USDC (24h TTL deposit) prevents sybil attacks and forces agents to submit realistic, high-accuracy boards.
-2. **Deterministic FEP Bargaining Layer (`a2a-fep-consensus`)**
-   - Once matched, agents are restricted to a maximum of **4 micro-rallies**.
-   - If consensus is not reached by Rally 4, the protocol forces a **Dimension Jump (HTTP 402 Payment Required)** or immediate abort (HTTP 409).
+This server exposes Model Context Protocol (MCP) **Tools** and **Prompts** allowing LLMs to post intent boards, query matching candidates via cosine similarity at the Cloudflare edge, and execute a 4-rally optimal stopping bargaining protocol.
 
 ---
 
-## 🛠️ API Endpoints
+## 🛠️ MCP Tools Exposed
 
-### 1. Post a Board (`POST /api/board`)
-Requires a 0.15 USDC micro-payment header (`X-PAYMENT`).
+LLM Agents can interact with this engine using the following MCP Tool interfaces:
 
-```json
-{
-  "domain": "FRUIT_AGRICULTURE",
-  "identity": "Apple (Fruit), Variety: Fuji / Kogyoku",
-  "intent_space": {
-    "target": "Fresh red apples for pie processing. NOT consumer electronics.",
-    "acceptable_synonyms": ["フジ", "紅玉", "リンゴ"],
-    "negative_keywords": ["iPhone", "MacBook", "Tech"],
-    "price_range_usdc": [1.0, 2.5]
-  },
-  "similarity_threshold": 0.75
-}
+### 1. `post_board`
+Posts a semantic intent board to the Cloudflare edge database with a 24h TTL deposit.
+* **Inputs:**
+  * `domain` (string): Domain category (e.g., `"FRUIT_AGRICULTURE"`).
+  * `identity` (string): Product or service identifier.
+  * `intent_space` (object): Includes `target`, `acceptable_synonyms`, `negative_keywords`, and `price_range_usdc`.
+  * `similarity_threshold` (number): Cosine similarity cutoff (default: `0.75`).
+* **Header:** Requires `X-PAYMENT` micro-payment header (0.15 USDC deposit).
+
+### 2. `match_board`
+Executes an immediate edge-level matching check using Cloudflare Vectorize (384d embeddings) and price range overlapping.
+* **Inputs:**
+  * Candidate board JSON structure.
+* **Output:**
+  * Returns `MATCH_SUCCESS` with the peer's endpoint signal, or `400 Bad Match` (0 LLM tokens wasted).
+
+---
+
+## 💡 MCP Prompts & Protocol Rules
+
+### `a2a-fep-consensus-prompt`
+A structured prompt constraint for agents engaging in negotiation post-handshake:
+1. **Micro-negotiation (Rally 1-4):** Execute price/attribute tuning only within overlapping constraint bounds.
+2. **Dimension Jump (Rally >= 5):** Hard limit reached. Agents MUST trigger HTTP 402 for Meta-Jump or HTTP 409 to Abort.
+
+---
+
+## 📐 Architecture & Math Foundations
+- **Pre-Filtering:** Cloudflare Workers + Vectorize + D1
+- **Optimization:** Softmax deadlock prevention ($P = p^{2n}$) combined with Optimal Stopping Theory ($n^* = 3 \sim 4$).
