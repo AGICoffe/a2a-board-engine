@@ -2,7 +2,7 @@
 
 ### 2. `openai.json`
 
-プロジェクトのルートディレクトリに配置し、`endpoints.board_api` の部分をあなたのCloudflareワーカーの本番URLに変更してください。
+https://a2a-board-engine.my-agent-api.workers.dev/
 
 ```json
 {
