@@ -1,0 +1,309 @@
+export interface Env {
+  AI: any;
+  VECTORIZE: VectorizeIndex;
+  DB: D1Database;
+  USED_TX?: KVNamespace; // リプレイアタック防止用のCloudflare KV（設定推奨）
+  HELIUS_API_KEY?: string;
+}
+
+// ==========================================
+// 設定エリア
+// ==========================================
+/** 売上を受け取るSolanaウォレットアドレス */
+const RECIPIENT_WALLET = "61SrLkdcvtVC9rKqs2JMSTN1C8FGH5gmSn2P4iCwL8WT"; 
+
+/** 看板投稿の必要料金（単位: USDC）※0.01 USDC ≈ 約1.5円 */
+const REQUIRED_USDC_AMOUNT = 0.01; 
+
+/** Helius RPC APIキー */
+const DEFAULT_HELIUS_KEY = "c29d5c93-c832-417f-b64e-5dd452b534f2"; 
+
+/** Solana Mainnet USDC Mint Address */
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"; 
+
+/**
+ * オンチェーン決済検証ロジック（KV重複チェック＆5分制限付き）
+ */
+async function verifySolanaUSDCTx(txSignature: string, env: Env): Promise<{ success: boolean; reason?: string; diff?: number }> {
+  if (!txSignature) return { success: false, reason: "NO_TX_PROVIDED" };
+
+  // 1. 重複利用チェック（リプレイアタック対策）
+  if (env.USED_TX) {
+    const isUsed = await env.USED_TX.get(txSignature);
+    if (isUsed) {
+      return { success: false, reason: "TX_ALREADY_USED_REPLAY_ATTACK" };
+    }
+  }
+
+  const apiKey = env.HELIUS_API_KEY || DEFAULT_HELIUS_KEY;
+  const solanaRpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
+
+  try {
+    const res = await fetch(solanaRpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'getTransaction',
+        params: [
+          txSignature, 
+          { encoding: 'jsonParsed', commitment: 'confirmed', maxSupportedTransactionVersion: 0 }
+        ]
+      })
+    });
+    
+    const json = await res.json() as any;
+    if (json.error) return { success: false, reason: `RPC_ERROR: ${json.error.message}` };
+    if (!json.result) return { success: false, reason: "TX_NOT_FOUND_ON_RPC" };
+    if (json.result.meta && json.result.meta.err) return { success: false, reason: "TX_EXECUTION_FAILED_ON_CHAIN" };
+
+    // 2. 時間検証（5分以上経過した古いTXは無効化）
+    const txBlockTime = json.result.blockTime;
+    const now = Math.floor(Date.now() / 1000);
+    if (txBlockTime && (now - txBlockTime > 300)) {
+      return { success: false, reason: "TX_EXPIRED_OLDER_THAN_5_MINUTES" };
+    }
+
+    // 3. 指定ウォレットへのUSDC着金差分チェック
+    const postBalances = json.result.meta.postTokenBalances || [];
+    const preBalances = json.result.meta.preTokenBalances || [];
+
+    const recipientPost = postBalances.find((b: any) => b.owner === RECIPIENT_WALLET && b.mint === USDC_MINT);
+    const recipientPre = preBalances.find((b: any) => b.owner === RECIPIENT_WALLET && b.mint === USDC_MINT);
+
+    const postAmount = recipientPost ? parseFloat(recipientPost.uiTokenAmount.uiAmount || 0) : 0;
+    const preAmount = recipientPre ? parseFloat(recipientPre.uiTokenAmount.uiAmount || 0) : 0;
+
+    const diff = postAmount - preAmount;
+
+    // 誤差を考慮して判定
+    if (diff >= REQUIRED_USDC_AMOUNT - 0.001) {
+      // 4. 検証成功時、5分間KVへ記録して再利用防止
+      if (env.USED_TX) {
+        await env.USED_TX.put(txSignature, "used", { expirationTtl: 300 });
+      }
+      return { success: true, diff };
+    } else {
+      return { success: false, reason: `INSUFFICIENT_USDC_DIFF: Received ${diff}, Need ${REQUIRED_USDC_AMOUNT}` };
+    }
+  } catch (err: any) {
+    return { success: false, reason: `FETCH_EXCEPTION: ${err.message}` };
+  }
+}
+
+// ==========================================
+// メインハンドラー
+// ==========================================
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    // CORS ヘッダー
+    const corsHeaders = {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, X-SOLANA-TX, X-PAYMENT',
+    };
+
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { headers: corsHeaders });
+    }
+
+    // 1. 看板の投稿 (POST /api/board)
+    if (request.method === "POST" && url.pathname === "/api/board") {
+      const response = await handlePostBoard(request, env);
+      // CORSヘッダーを付与して返却
+      Object.entries(corsHeaders).forEach(([k, v]) => response.headers.set(k, v));
+      return response;
+    }
+
+    // 2. マッチング照合 (POST /api/match)
+    if (request.method === "POST" && url.pathname === "/api/match") {
+      const response = await handleMatchBoard(request, env);
+      Object.entries(corsHeaders).forEach(([k, v]) => response.headers.set(k, v));
+      return response;
+    }
+
+    return new Response("Not Found", { status: 404, headers: corsHeaders });
+  }
+};
+
+// --- 看板の登録処理（決済連携版） ---
+async function handlePostBoard(request: Request, env: Env): Promise<Response> {
+  const paymentHeader = request.headers.get("X-SOLANA-TX") || 
+                        request.headers.get("X-PAYMENT") || 
+                        new URL(request.url).searchParams.get("tx");
+
+  // 1. 支払い情報がない場合 (402 Payment Required)
+  if (!paymentHeader) {
+    return new Response(JSON.stringify({
+      status: 402,
+      error: "Payment Required",
+      product_name: "24-Hour Board Placement Service",
+      price: `${REQUIRED_USDC_AMOUNT} USDC`,
+      amount_usdc: REQUIRED_USDC_AMOUNT,
+      network: "solana",
+      tokenMint: USDC_MINT,
+      recipient: RECIPIENT_WALLET,
+      instructions_for_agent: {
+        step1: `Send ${REQUIRED_USDC_AMOUNT} USDC on Solana to address: ${RECIPIENT_WALLET}`,
+        step2: "Attach your transaction signature in the 'X-SOLANA-TX' or 'X-PAYMENT' HTTP Header.",
+        step3: "Re-send your JSON board data along with the header."
+      },
+      board_schema_requirements: {
+        similarity_threshold_default: 0.75,
+        similarity_threshold_range: "0.00 to 1.00 (Cosine Similarity)",
+        price_range_format: "[min_usdc, max_usdc]"
+      },
+      example_request_body: {
+        domain: "gpu-rental",
+        identity: "agent-123",
+        intent_space: {
+          target: "Need H100 GPU for 2 hours",
+          acceptable_synonyms: ["NVIDIA H100", "Hopper", "AI Compute"],
+          negative_keywords: ["A100", "RTX4090"],
+          price_range_usdc: [1.5, 3.0]
+        },
+        similarity_threshold: 0.80
+      }
+    }), {
+      status: 402,
+      headers: { "Content-Type": "application/json", "X-Accept-Payment": "USDC/Solana" }
+    });
+  }
+
+  // 2. オンチェーン検証の実行
+  const txResult = await verifySolanaUSDCTx(paymentHeader, env);
+
+  if (!txResult.success) {
+    return new Response(JSON.stringify({
+      success: false,
+      status: 402,
+      error: "Payment Verification Failed",
+      debugReason: txResult.reason,
+      instruction_for_agent: "The provided transaction signature is invalid, expired (>5m), or already used. Please submit a new payment transaction."
+    }), { 
+      status: 402, 
+      headers: { "Content-Type": "application/json" } 
+    });
+  }
+
+  // 3. 決済成功後の看板登録処理
+  const data = await request.json() as any;
+  const boardId = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + (24 * 60 * 60); // 24時間後のTTL
+
+  // 看板データのデフォルト値補正
+  const similarityThreshold = data.similarity_threshold || 0.75;
+  const priceRange = data.intent_space?.price_range_usdc || [0, 0];
+
+  // A. ドメインと意図から「検索用プレーンテキスト」を合成
+  const searchText = `[${data.domain}] ${data.identity} ${data.intent_space?.target} Synonyms: ${data.intent_space?.acceptable_synonyms?.join(" ")} NOT: ${data.intent_space?.negative_keywords?.join(" ")}`;
+
+  // B. Cloudflare Workers AI でベクトル化 (384次元)
+  const embeddings = await env.AI.run("@cf/baai/bge-small-en-v1.5", {
+    text: [searchText]
+  });
+  const vector = embeddings.data[0];
+
+  // C. Vectorize DB にベクトルとメタデータを登録
+  await env.VECTORIZE.insert([{
+    id: boardId,
+    values: vector,
+    metadata: {
+      domain: data.domain,
+      price_min: priceRange[0],
+      price_max: priceRange[1],
+      expires_at: expiresAt
+    }
+  }]);
+
+  // D. D1 に構造化データの本体を登録
+  await env.DB.prepare(`
+    INSERT INTO boards (id, domain, identity, price_min, price_max, raw_json, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    boardId,
+    data.domain,
+    data.identity,
+    priceRange[0],
+    priceRange[1],
+    JSON.stringify(data),
+    now,
+    expiresAt
+  ).run();
+
+  return new Response(JSON.stringify({
+    success: true,
+    board_id: boardId,
+    product_name: "24-Hour Board Placement Service",
+    payment_status: "VERIFIED",
+    verified_tx: paymentHeader,
+    expires_at: expiresAt,
+    status: "BOARD_ACTIVE_24H",
+    applied_constraints: {
+      similarity_threshold: similarityThreshold,
+      price_range_usdc: priceRange
+    }
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
+
+// --- 高速ゼロトークン・マッチング照合処理 ---
+async function handleMatchBoard(request: Request, env: Env): Promise<Response> {
+  const myBoard = await request.json() as any;
+  const now = Math.floor(Date.now() / 1000);
+
+  // A. 照合元テキストからベクトルを生成
+  const searchText = `[${myBoard.domain}] ${myBoard.identity} ${myBoard.intent_space.target}`;
+  const embeddings = await env.AI.run("@cf/baai/bge-small-en-v1.5", {
+    text: [searchText]
+  });
+  const myVector = embeddings.data[0];
+
+  // B. Vectorize で類似度検索 (コサイン類似度 Top 10)
+  const matches = await env.VECTORIZE.query(myVector, {
+    topK: 10,
+    returnMetadata: true
+  });
+
+  const myPriceMin = myBoard.intent_space.price_range_usdc[0];
+  const myPriceMax = myBoard.intent_space.price_range_usdc[1];
+  const threshold = myBoard.similarity_threshold || 0.75; // デフォルト類似度許容値
+
+  // C. 類似度 ＋ 24時間有効期限 ＋ 価格帯交差 (Overlap) をフィルタリング
+  const validCandidates = matches.matches.filter((m: any) => {
+    const meta = m.metadata;
+    const isSimilar = m.score >= threshold;
+    const isNotExpired = meta.expires_at > now;
+    const isDomainMatch = meta.domain === myBoard.domain;
+    
+    // 価格帯の交差判定 (Overlap = Max(MinA, MinB) <= Min(MaxA, MaxB))
+    const priceOverlap = Math.max(myPriceMin, meta.price_min) <= Math.min(myPriceMax, meta.price_max);
+
+    return isSimilar && isNotExpired && isDomainMatch && priceOverlap;
+  });
+
+  // 交差判定ゼロなら即時弾く（ゼロトークン拒絶）
+  if (validCandidates.length === 0) {
+    return new Response(JSON.stringify({
+      status: "NO_MATCH",
+      message: "No active board crossed the constraint space. 0 tokens wasted."
+    }), { status: 400, headers: { "Content-Type": "application/json" } });
+  }
+
+  // D. 最も適合した1件を取得して D1 から看板詳細を取得
+  const bestMatch = validCandidates[0];
+  const targetBoard = await env.DB.prepare(`SELECT * FROM boards WHERE id = ?`).bind(bestMatch.id).first();
+
+  return new Response(JSON.stringify({
+    status: "MATCH_SUCCESS",
+    similarity_score: bestMatch.score,
+    target_board: JSON.parse(targetBoard.raw_json as string),
+    handshake_signal: {
+      action: "PROCEED_TO_A2A_FEP_CONSENSUS",
+      endpoint: "https://your-mcp-server.com/a2a-fep-consensus"
+    }
+  }), { status: 200, headers: { "Content-Type": "application/json" } });
+}
